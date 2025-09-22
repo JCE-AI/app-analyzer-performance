@@ -1,0 +1,99 @@
+name: Keep Alive • OPTIMITIVE
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+    - cron: "1-59/5 * * * *"
+    - cron: "2-59/5 * * * *"
+    - cron: "3-59/5 * * * *"
+    - cron: "4-59/5 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    continue-on-error: true
+    concurrency:
+      group: keepalive-optimitive
+      cancel-in-progress: false
+
+    container:
+      image: mcr.microsoft.com/playwright/python:v1.45.0-jammy
+
+    steps:
+      - name: Ensure Playwright
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir playwright==1.45.0
+
+      - name: Wake & Warm (OPTIMITIVE)
+        run: |
+          python - <<'PY' || true
+          import re, time
+          from playwright.sync_api import sync_playwright
+
+          URL       = "https://optimitiveperformanceanalysis.streamlit.app/"
+          HOLD_S    = 180
+          GOTO_MS   = 60000
+          READY_S   = 90
+
+          UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+          def is_awake(scope):
+              try: return scope.locator("[data-testid='stAppViewContainer']").count() > 0
+              except: return False
+
+          def try_click(scope) -> bool:
+              sels = [
+                "button:has-text('Yes, get this app back up!')",
+                "a:has-text('Yes, get this app back up!')",
+                "text=Yes, get this app back up!",
+                "text=/get this app back up/i",
+              ]
+              for sel in sels:
+                  try:
+                      loc = scope.locator(sel)
+                      if loc.count() and loc.first.is_visible():
+                          loc.first.click(force=True, timeout=2000); return True
+                  except: pass
+              return False
+
+          def click_everywhere(page) -> bool:
+              if try_click(page): return True
+              for fr in page.frames:
+                  try:
+                      if try_click(fr): return True
+                  except: pass
+              return False
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(
+                  headless=True,
+                  args=["--disable-blink-features=AutomationControlled"]
+              )
+              ctx = browser.new_context(user_agent=UA, locale="es-ES", viewport={"width":1366,"height":768})
+              ctx.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+              page = ctx.new_page()
+              try:
+                  page.goto(URL, wait_until="networkidle", timeout=GOTO_MS)
+
+                  start = time.time()
+                  while time.time()-start < READY_S and not is_awake(page):
+                      if click_everywhere(page):
+                          page.wait_for_timeout(2500)
+                          if is_awake(page): break
+                      try:
+                          page.reload(wait_until="networkidle", timeout=30000)
+                      except: pass
+                      page.wait_for_timeout(1200)
+
+                  page.wait_for_timeout(HOLD_S*1000)
+              except Exception as e:
+                  print("WARN:", e)
+              finally:
+                  ctx.close(); browser.close()
+          PY
